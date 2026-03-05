@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+shared-files/*
+!shared-files/.gitkeep
+venv/
+.DS_Store

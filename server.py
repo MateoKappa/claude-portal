@@ -4,14 +4,20 @@ A web-based chat interface that connects to Claude Code CLI via WebSocket.
 """
 
 import asyncio
+import base64
+import fcntl
 import json
 import os
+import pty
 import secrets
+import signal
+import struct
+import termios
 import time
 import uuid
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Cookie
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from pathlib import Path
 
 # ─── Configuration ───────────────────────────────────────────────────────────
@@ -36,8 +42,15 @@ LOCKOUT_SECONDS = 300
 
 app = FastAPI(title="Claude Portal", docs_url=None, redoc_url=None)
 
-# Clean env so child claude processes don't think they're nested
-CLEAN_ENV = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+# Clean env for child processes: drop CLAUDECODE (so claude doesn't think it's
+# nested) and strip portal secrets (auth tokens, tunnel credentials) so neither
+# the chat subprocess nor PTY shells can read them (privilege-escalation guard).
+_SECRET_ENV_KEYS = ("CLAUDECODE", "ADMIN_TOKEN", "LIMITED_TOKEN")
+CLEAN_ENV = {
+    k: v
+    for k, v in os.environ.items()
+    if k not in _SECRET_ENV_KEYS and not k.startswith("TUNNEL_")
+}
 
 # ─── State ───────────────────────────────────────────────────────────────────
 
@@ -218,6 +231,8 @@ async def index(portal_auth: str | None = Cookie(default=None)):
 def build_claude_cmd(role: str) -> list[str]:
     shared_path = str(SHARED_FILES_DIR.resolve())
 
+    home_path = str(Path.home())
+
     file_prompt = (
         f"When the user asks you to create a file (PDF, image, text, etc.) that they need to download, "
         f"save it to {shared_path}/ — files there are served at /files/<filename> and the user can "
@@ -225,12 +240,29 @@ def build_claude_cmd(role: str) -> list[str]:
         f"[Download filename](/files/filename)"
     )
 
+    smart_home_prompt = (
+        f"\n\nSMART HOME — WiZ Light Control:\n"
+        f"The user has a WiZ smart bulb. You can control it with {home_path}/wiz-light.sh\n"
+        f"Commands:\n"
+        f"  {home_path}/wiz-light.sh on              — turn light on\n"
+        f"  {home_path}/wiz-light.sh off             — turn light off\n"
+        f"  {home_path}/wiz-light.sh brightness N    — set brightness (0-255)\n"
+        f"  {home_path}/wiz-light.sh color red       — named colors (red, green, blue, purple, orange, pink)\n"
+        f"  {home_path}/wiz-light.sh color R G B     — custom RGB values\n"
+        f"  {home_path}/wiz-light.sh warm            — warm white (2700K)\n"
+        f"  {home_path}/wiz-light.sh cool            — cool white (6500K)\n"
+        f"  {home_path}/wiz-light.sh status          — check current state\n"
+        f"When the user says things like 'close the lights', 'turn off the light', 'lights off', etc. — run the off command.\n"
+        f"When they say 'open the lights', 'turn on the light', 'lights on', etc. — run the on command.\n"
+        f"Just run the command and confirm briefly. No need for long explanations."
+    )
+
     if role == "admin":
         return [
             "claude", "-p",
             "--dangerously-skip-permissions",
             "--verbose", "--output-format", "stream-json",
-            "--append-system-prompt", file_prompt,
+            "--append-system-prompt", file_prompt + smart_home_prompt,
         ]
 
     # Limited role
@@ -257,7 +289,7 @@ def build_claude_cmd(role: str) -> list[str]:
             f"Read({shared_path}/*)",
             f"Glob({shared_path}/*)",
             "Bash",
-        "--append-system-prompt", limited_prompt,
+        "--append-system-prompt", limited_prompt + smart_home_prompt,
     ]
 
 
@@ -402,3 +434,282 @@ async def list_files(portal_auth: str | None = Cookie(default=None)):
                 "url": f"/files/{f.name}",
             })
     return {"files": files}
+
+
+# ─── Interactive Terminal (PTY, admin only) ──────────────────────────────────
+
+SCROLLBACK_CAP = 200_000
+WRITE_BUF_CAP = 1_000_000  # max pending bytes queued toward a stalled PTY
+
+
+class TerminalSession:
+    def __init__(self, tid: str, name: str, pid: int, fd: int):
+        self.id = tid
+        self.name = name
+        self.pid = pid
+        self.fd = fd
+        self.scrollback = bytearray()
+        self.attached: WebSocket | None = None
+        self.alive = True
+        self.write_buf = bytearray()
+        self.writer_registered = False
+
+    def append_scrollback(self, data: bytes):
+        self.scrollback.extend(data)
+        if len(self.scrollback) > SCROLLBACK_CAP:
+            del self.scrollback[: len(self.scrollback) - SCROLLBACK_CAP]
+
+
+terminals: dict[str, TerminalSession] = {}
+_terminal_counter = 0
+
+
+async def _term_safe_send(ws: WebSocket, payload: dict):
+    try:
+        await ws.send_json(payload)
+    except Exception:
+        pass
+
+
+def _term_schedule_send(sess: TerminalSession, payload: dict):
+    ws = sess.attached
+    if ws is not None:
+        asyncio.ensure_future(_term_safe_send(ws, payload))
+
+
+def _on_pty_readable(sess: TerminalSession):
+    loop = asyncio.get_event_loop()
+    try:
+        data = os.read(sess.fd, 65536)
+    except OSError:
+        data = b""
+    if not data:
+        # EOF — shell exited
+        try:
+            loop.remove_reader(sess.fd)
+        except Exception:
+            pass
+        sess.alive = False
+        _term_remove_writer(sess)
+        sess.write_buf.clear()
+        try:
+            os.waitpid(sess.pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        _term_schedule_send(sess, {"t": "exit"})
+        return
+    sess.append_scrollback(data)
+    _term_schedule_send(sess, {"t": "o", "d": base64.b64encode(data).decode("ascii")})
+
+
+def _term_remove_writer(sess: TerminalSession):
+    if sess.writer_registered:
+        try:
+            asyncio.get_event_loop().remove_writer(sess.fd)
+        except Exception:
+            pass
+        sess.writer_registered = False
+
+
+def _term_flush_writes(sess: TerminalSession):
+    """Drain sess.write_buf into the (non-blocking) PTY master without ever
+    blocking the event loop. Handles partial writes; retries via add_writer."""
+    while sess.write_buf and sess.alive:
+        try:
+            n = os.write(sess.fd, sess.write_buf)
+        except BlockingIOError:
+            break
+        except OSError:
+            sess.write_buf.clear()
+            break
+        if n <= 0:
+            break
+        del sess.write_buf[:n]
+    if sess.write_buf and sess.alive:
+        if not sess.writer_registered:
+            try:
+                asyncio.get_event_loop().add_writer(sess.fd, _term_flush_writes, sess)
+                sess.writer_registered = True
+            except Exception:
+                sess.write_buf.clear()
+    else:
+        if not sess.alive:
+            sess.write_buf.clear()
+        _term_remove_writer(sess)
+
+
+def _term_write(sess: TerminalSession, data: bytes):
+    if not sess.alive or not data:
+        return
+    if len(sess.write_buf) + len(data) > WRITE_BUF_CAP:
+        print(
+            f"[terminal {sess.id}] write buffer full ({len(sess.write_buf)} bytes), "
+            f"dropping {len(data)} bytes of input",
+            flush=True,
+        )
+        return
+    sess.write_buf.extend(data)
+    _term_flush_writes(sess)
+
+
+def _spawn_terminal() -> TerminalSession:
+    global _terminal_counter
+    _terminal_counter += 1
+    name = f"Terminal {_terminal_counter}"
+    tid = uuid.uuid4().hex
+
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    pid, fd = pty.fork()
+    if pid == 0:
+        # Child — never let an exception leak back into the server event loop
+        try:
+            os.chdir(str(Path.home()))
+            env = dict(CLEAN_ENV)
+            env["TERM"] = "xterm-256color"
+            env["COLORTERM"] = "truecolor"
+            env.setdefault("LANG", "en_US.UTF-8")
+            os.execvpe(shell, [shell, "-l"], env)
+        except BaseException:
+            pass
+        os._exit(1)
+
+    os.set_blocking(fd, False)
+    sess = TerminalSession(tid, name, pid, fd)
+    terminals[tid] = sess
+    loop = asyncio.get_event_loop()
+    loop.add_reader(fd, _on_pty_readable, sess)
+    return sess
+
+
+def _kill_terminal(sess: TerminalSession):
+    loop = asyncio.get_event_loop()
+    sess.alive = False
+    _term_remove_writer(sess)
+    sess.write_buf.clear()
+    try:
+        loop.remove_reader(sess.fd)
+    except Exception:
+        pass
+    for sig in (signal.SIGHUP, signal.SIGKILL):
+        try:
+            os.kill(sess.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        os.close(sess.fd)
+    except OSError:
+        pass
+    try:
+        os.waitpid(sess.pid, os.WNOHANG)
+    except ChildProcessError:
+        pass
+    sess.alive = False
+    terminals.pop(sess.id, None)
+
+
+@app.post("/api/terminals")
+async def create_terminal(portal_auth: str | None = Cookie(default=None)):
+    if check_auth(portal_auth) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    sess = _spawn_terminal()
+    return {"id": sess.id, "name": sess.name}
+
+
+@app.get("/api/terminals")
+async def list_terminals(portal_auth: str | None = Cookie(default=None)):
+    if check_auth(portal_auth) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return {
+        "terminals": [
+            {
+                "id": s.id,
+                "name": s.name,
+                "attached": s.attached is not None,
+                "alive": s.alive,
+            }
+            for s in terminals.values()
+        ]
+    }
+
+
+@app.delete("/api/terminals/{tid}")
+async def delete_terminal(tid: str, portal_auth: str | None = Cookie(default=None)):
+    if check_auth(portal_auth) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    sess = terminals.get(tid)
+    if sess is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    old_ws = sess.attached
+    sess.attached = None
+    _kill_terminal(sess)
+    if old_ws is not None:
+        await _term_safe_send(old_ws, {"t": "exit"})
+        try:
+            await old_ws.close()
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+@app.websocket("/ws/terminal/{tid}")
+async def terminal_websocket(websocket: WebSocket, tid: str):
+    role = check_auth(websocket.cookies.get("portal_auth"))
+    if role != "admin":
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
+    sess = terminals.get(tid)
+    if sess is None:
+        await websocket.close(code=4004, reason="Unknown terminal")
+        return
+
+    await websocket.accept()
+
+    # Only one attachment: kick out any previous socket
+    old_ws = sess.attached
+    if old_ws is not None and old_ws is not websocket:
+        sess.attached = None
+        await _term_safe_send(old_ws, {"t": "detached"})
+        try:
+            await old_ws.close()
+        except Exception:
+            pass
+
+    sess.attached = websocket
+
+    # Replay full scrollback as one message
+    await _term_safe_send(
+        websocket,
+        {"t": "o", "d": base64.b64encode(bytes(sess.scrollback)).decode("ascii")},
+    )
+    if not sess.alive:
+        await _term_safe_send(websocket, {"t": "exit"})
+
+    try:
+        while True:
+            try:
+                msg = await websocket.receive_json()
+            except (json.JSONDecodeError, ValueError):
+                continue
+            mtype = msg.get("t")
+            if mtype == "i":
+                data = msg.get("d")
+                if isinstance(data, str) and sess.alive:
+                    _term_write(sess, data.encode("utf-8"))
+            elif mtype == "r":
+                try:
+                    rows = int(msg.get("rows", 24))
+                    cols = int(msg.get("cols", 80))
+                    fcntl.ioctl(
+                        sess.fd,
+                        termios.TIOCSWINSZ,
+                        struct.pack("HHHH", rows, cols, 0, 0),
+                    )
+                except (OSError, ValueError, TypeError):
+                    pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        # Detach only — the shell keeps running (tmux-lite)
+        if sess.attached is websocket:
+            sess.attached = None

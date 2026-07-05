@@ -10,6 +10,9 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark-dimmed.min.css">
     <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" integrity="sha384-tStR1zLfWgsiXCF3IgfB3lBa8KmBe/lG287CL9WCeKgQYcp1bjb4/+mwN6oti4Co" crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js" integrity="sha384-J4qzUjBl1FxyLsl/kQPQIOeINsmp17OHYXDOMpMxlKX53ZfYsL+aWHpgArvOuof9" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js" integrity="sha384-XGqKrV8Jrukp1NITJbOEHwg01tNkuXr6uB6YEj69ebpYU3v7FvoGgEg23C1Gcehk" crossorigin="anonymous"></script>
     <style>
         :root {
             --bg-deep: #08080a;
@@ -629,6 +632,159 @@
         }
         .status-dot.connected { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,0.4); }
 
+        /* ── View switcher ── */
+        .view-switch {
+            display: none;
+            align-items: center;
+            gap: 2px;
+            padding: 2px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-sm);
+            margin-right: 4px;
+        }
+        .view-switch .btn {
+            border: 1px solid transparent;
+            background: transparent;
+            padding: 5px 12px;
+        }
+        .view-switch .btn.active {
+            background: var(--accent-dim);
+            border-color: rgba(167,139,250,0.3);
+            color: var(--accent);
+        }
+
+        /* ── Terminal view ── */
+        #terminal-view {
+            position: relative;
+            z-index: 1;
+            flex: 1;
+            min-height: 0;
+            display: none;
+            flex-direction: column;
+            background: var(--bg-deep);
+        }
+
+        .term-tabs {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            background: rgba(12,12,15,0.85);
+            border-bottom: 1px solid var(--border-subtle);
+            overflow-x: auto;
+            flex-shrink: 0;
+            -webkit-overflow-scrolling: touch;
+        }
+        .term-tabs::-webkit-scrollbar { height: 3px; }
+        .term-tabs::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+
+        .term-tab {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 6px 5px 12px;
+            border: 1px solid var(--border-subtle);
+            background: var(--bg-elevated);
+            color: var(--text-secondary);
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s;
+            flex-shrink: 0;
+            user-select: none;
+        }
+        .term-tab:hover { background: var(--bg-surface); color: var(--text-primary); }
+        .term-tab.active {
+            background: var(--accent-dim);
+            border-color: rgba(167,139,250,0.35);
+            color: var(--accent);
+        }
+        .term-tab.dead { opacity: 0.5; }
+        .term-tab.dead .term-tab-name { text-decoration: line-through; }
+
+        .term-tab-close {
+            display: flex; align-items: center; justify-content: center;
+            width: 18px; height: 18px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            line-height: 1;
+            padding: 0;
+            font-family: 'DM Sans', sans-serif;
+        }
+        .term-tab-close:hover { background: rgba(248,113,113,0.15); color: var(--error-accent); }
+
+        .term-tab-new {
+            display: flex; align-items: center; justify-content: center;
+            width: 28px; height: 28px;
+            border: 1px dashed var(--border-medium);
+            background: transparent;
+            color: var(--text-muted);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+            flex-shrink: 0;
+            transition: all 0.15s;
+            font-family: 'DM Sans', sans-serif;
+        }
+        .term-tab-new:hover { color: var(--accent); border-color: rgba(167,139,250,0.4); }
+
+        /* Mobile key bar (touch devices only) */
+        #term-keybar {
+            display: none;
+            gap: 6px;
+            padding: 6px 10px;
+            background: rgba(12,12,15,0.9);
+            border-bottom: 1px solid var(--border-subtle);
+            flex-shrink: 0;
+            overflow-x: auto;
+        }
+        @media (pointer: coarse) {
+            #term-keybar { display: flex; }
+        }
+        .term-key {
+            padding: 6px 12px;
+            border: 1px solid var(--border-medium);
+            background: var(--bg-elevated);
+            color: var(--text-secondary);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            flex-shrink: 0;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        .term-key:active { background: var(--bg-surface-hover); }
+        .term-key.on {
+            background: var(--accent-dim);
+            border-color: rgba(167,139,250,0.4);
+            color: var(--accent);
+        }
+
+        #term-panes {
+            flex: 1;
+            min-height: 0;
+            position: relative;
+            background: var(--bg-deep);
+        }
+        .term-pane {
+            position: absolute;
+            inset: 0;
+            padding: 8px 4px calc(8px + var(--safe-bottom)) 10px;
+            display: none;
+        }
+        .term-pane.active { display: block; }
+        .term-pane .xterm { height: 100%; }
+
         /* ── Mobile ── */
         @media (max-width: 640px) {
             header { padding: 10px 14px; }
@@ -684,6 +840,16 @@
         </div>
         <div class="header-actions">
             <div class="status-dot" id="status-dot"></div>
+            <div class="view-switch" id="view-switch">
+                <button class="btn active" id="view-chat-btn" onclick="switchView('chat')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    <span class="btn-label">Chat</span>
+                </button>
+                <button class="btn" id="view-terminal-btn" onclick="switchView('terminal')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                    <span class="btn-label">Terminal</span>
+                </button>
+            </div>
             <button class="btn" onclick="showFiles()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                 <span class="btn-label">Files</span>
@@ -713,6 +879,20 @@
                 <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
             </button>
         </div>
+    </div>
+
+    <div id="terminal-view">
+        <div class="term-tabs" id="term-tabs"></div>
+        <div id="term-keybar">
+            <button class="term-key" data-k="esc">Esc</button>
+            <button class="term-key" data-k="tab">Tab</button>
+            <button class="term-key" id="term-key-ctrl">Ctrl</button>
+            <button class="term-key" data-k="left">&#8592;</button>
+            <button class="term-key" data-k="down">&#8595;</button>
+            <button class="term-key" data-k="up">&#8593;</button>
+            <button class="term-key" data-k="right">&#8594;</button>
+        </div>
+        <div id="term-panes"></div>
     </div>
 
     <script>
@@ -1083,6 +1263,264 @@
                 e.preventDefault();
                 if (!isGenerating) sendMessage();
             }
+        });
+
+        // ═══════════════ Terminal (admin only) ═══════════════
+        var currentView = 'chat';
+        var termTabs = [];        // [{id, name, alive}] from server
+        var termInstances = {};   // tid -> {term, fit, ws, pane, dead, detached}
+        var activeTid = null;
+        var ctrlArmed = false;
+        var termCreating = false;
+
+        // Probe admin access: 403 -> hide the view switcher (Terminal button) entirely
+        fetch('/api/terminals').then(function(r) {
+            if (r.status === 403) return null;
+            return r.json();
+        }).then(function(data) {
+            if (data && data.terminals !== undefined) {
+                termTabs = data.terminals;
+                document.getElementById('view-switch').style.display = 'flex';
+            }
+        }).catch(function() {});
+
+        function switchView(view) {
+            currentView = view;
+            var isTerm = view === 'terminal';
+            document.getElementById('chat-container').style.display = isTerm ? 'none' : 'flex';
+            document.getElementById('input-area').style.display = isTerm ? 'none' : '';
+            document.getElementById('terminal-view').style.display = isTerm ? 'flex' : 'none';
+            document.getElementById('view-chat-btn').classList.toggle('active', !isTerm);
+            document.getElementById('view-terminal-btn').classList.toggle('active', isTerm);
+            if (isTerm) enterTerminalView();
+        }
+
+        function enterTerminalView() {
+            fetch('/api/terminals').then(function(r) { return r.json(); }).then(function(data) {
+                if (!data || data.terminals === undefined) return;
+                termTabs = data.terminals;
+                // Drop cached instances for terminals that no longer exist server-side
+                Object.keys(termInstances).forEach(function(tid) {
+                    if (!termTabs.some(function(t) { return t.id === tid; })) destroyInstance(tid);
+                });
+                if (termTabs.length === 0) {
+                    createTerminal();
+                } else {
+                    var tid = (activeTid && termTabs.some(function(t) { return t.id === activeTid; }))
+                        ? activeTid : termTabs[0].id;
+                    activateTab(tid);
+                }
+            }).catch(function() {});
+        }
+
+        function createTerminal() {
+            if (termCreating) return;
+            termCreating = true;
+            fetch('/api/terminals', { method: 'POST' }).then(function(r) { return r.json(); }).then(function(t) {
+                termCreating = false;
+                if (!t || !t.id) return;
+                termTabs.push({ id: t.id, name: t.name, alive: true });
+                activateTab(t.id);
+            }).catch(function() { termCreating = false; });
+        }
+
+        function closeTerminal(tid) {
+            var tab = termTabs.filter(function(t) { return t.id === tid; })[0];
+            if (!confirm('Close ' + (tab ? tab.name : 'terminal') + '? The shell will be killed.')) return;
+            fetch('/api/terminals/' + tid, { method: 'DELETE' }).then(function() {
+                termTabs = termTabs.filter(function(t) { return t.id !== tid; });
+                destroyInstance(tid);
+                if (activeTid === tid) {
+                    activeTid = null;
+                    if (termTabs.length > 0) activateTab(termTabs[0].id);
+                    else renderTermTabs();
+                } else {
+                    renderTermTabs();
+                }
+            });
+        }
+
+        function destroyInstance(tid) {
+            var inst = termInstances[tid];
+            if (!inst) return;
+            if (inst.ws) { try { inst.ws.close(); } catch (e) {} }
+            try { inst.term.dispose(); } catch (e) {}
+            if (inst.pane && inst.pane.parentNode) inst.pane.remove();
+            delete termInstances[tid];
+        }
+
+        function renderTermTabs() {
+            var bar = document.getElementById('term-tabs');
+            bar.textContent = '';
+            termTabs.forEach(function(t) {
+                var inst = termInstances[t.id];
+                var tab = document.createElement('div');
+                tab.className = 'term-tab' + (t.id === activeTid ? ' active' : '') +
+                    ((t.alive === false || (inst && inst.dead)) ? ' dead' : '');
+                var name = document.createElement('span');
+                name.className = 'term-tab-name';
+                name.textContent = t.name;
+                tab.appendChild(name);
+                var x = document.createElement('button');
+                x.className = 'term-tab-close';
+                x.textContent = '×';
+                x.title = 'Close terminal';
+                x.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    closeTerminal(t.id);
+                });
+                tab.appendChild(x);
+                tab.addEventListener('click', function() { activateTab(t.id); });
+                bar.appendChild(tab);
+            });
+            var plus = document.createElement('button');
+            plus.className = 'term-tab-new';
+            plus.textContent = '+';
+            plus.title = 'New terminal';
+            plus.addEventListener('click', createTerminal);
+            bar.appendChild(plus);
+        }
+
+        function getInstance(tid) {
+            if (termInstances[tid]) return termInstances[tid];
+            var pane = document.createElement('div');
+            pane.className = 'term-pane';
+            document.getElementById('term-panes').appendChild(pane);
+
+            var term = new window.Terminal({
+                cursorBlink: true,
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: window.innerWidth < 640 ? 12 : 13,
+                scrollback: 5000,
+                allowProposedApi: true,
+                theme: {
+                    background: '#0c0c0f',
+                    foreground: '#e8e6f0',
+                    cursor: '#a78bfa',
+                    selectionBackground: 'rgba(167,139,250,0.3)'
+                }
+            });
+            var fit = new window.FitAddon.FitAddon();
+            term.loadAddon(fit);
+            term.open(pane);
+            term.onData(function(d) { sendTermInput(tid, d); });
+
+            var inst = { term: term, fit: fit, ws: null, pane: pane, dead: false, detached: false };
+            termInstances[tid] = inst;
+            return inst;
+        }
+
+        function activateTab(tid) {
+            activeTid = tid;
+            var inst = getInstance(tid);
+            Object.keys(termInstances).forEach(function(k) {
+                termInstances[k].pane.classList.toggle('active', k === tid);
+            });
+            renderTermTabs();
+            attachTerm(tid);
+            requestAnimationFrame(function() {
+                fitAndReport(tid);
+                inst.term.focus();
+            });
+        }
+
+        function attachTerm(tid) {
+            var inst = getInstance(tid);
+            if (inst.dead) return;
+            if (inst.ws && (inst.ws.readyState === WebSocket.CONNECTING || inst.ws.readyState === WebSocket.OPEN)) return;
+
+            // Reset before replay: server sends full scrollback on attach
+            inst.term.reset();
+            inst.detached = false;
+
+            var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            var tws = new WebSocket(protocol + '//' + location.host + '/ws/terminal/' + tid);
+            inst.ws = tws;
+
+            tws.onopen = function() {
+                fitAndReport(tid);
+            };
+            tws.onmessage = function(ev) {
+                var msg;
+                try { msg = JSON.parse(ev.data); } catch (e) { return; }
+                if (msg.t === 'o') {
+                    inst.term.write(b64ToBytes(msg.d));
+                } else if (msg.t === 'exit') {
+                    inst.dead = true;
+                    inst.term.write('\r\n[process exited]\r\n');
+                    var tab = termTabs.filter(function(t) { return t.id === tid; })[0];
+                    if (tab) tab.alive = false;
+                    renderTermTabs();
+                } else if (msg.t === 'detached') {
+                    inst.detached = true;
+                    inst.term.write('\r\n\x1b[2m[attached elsewhere]\x1b[0m\r\n');
+                }
+            };
+            tws.onclose = function() {
+                if (inst.ws === tws) inst.ws = null;
+            };
+            tws.onerror = function() {};
+        }
+
+        function b64ToBytes(b64) {
+            var bin = atob(b64);
+            var arr = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+            return arr;
+        }
+
+        function sendTermInput(tid, data) {
+            var inst = termInstances[tid];
+            if (!inst || !inst.ws || inst.ws.readyState !== WebSocket.OPEN) return;
+            if (ctrlArmed && data.length === 1) {
+                data = String.fromCharCode(data.charCodeAt(0) & 31);
+                setCtrl(false);
+            }
+            inst.ws.send(JSON.stringify({ t: 'i', d: data }));
+        }
+
+        function fitAndReport(tid) {
+            var inst = termInstances[tid];
+            if (!inst || !inst.pane.classList.contains('active')) return;
+            try { inst.fit.fit(); } catch (e) { return; }
+            if (inst.ws && inst.ws.readyState === WebSocket.OPEN) {
+                inst.ws.send(JSON.stringify({ t: 'r', cols: inst.term.cols, rows: inst.term.rows }));
+            }
+        }
+
+        var termResizeTimer = null;
+        function onTermResize() {
+            if (currentView !== 'terminal' || !activeTid) return;
+            clearTimeout(termResizeTimer);
+            termResizeTimer = setTimeout(function() { fitAndReport(activeTid); }, 120);
+        }
+        window.addEventListener('resize', onTermResize);
+        window.addEventListener('orientationchange', onTermResize);
+
+        // Mobile key bar
+        function setCtrl(on) {
+            ctrlArmed = on;
+            document.getElementById('term-key-ctrl').classList.toggle('on', on);
+        }
+        var TERM_KEY_SEQS = {
+            esc: '\x1b',
+            tab: '\t',
+            left: '\x1b[D',
+            down: '\x1b[B',
+            up: '\x1b[A',
+            right: '\x1b[C'
+        };
+        document.querySelectorAll('#term-keybar .term-key').forEach(function(btn) {
+            btn.addEventListener('pointerdown', function(e) {
+                e.preventDefault(); // keep terminal focused, no zoom
+                if (!activeTid) return;
+                if (btn.id === 'term-key-ctrl') {
+                    setCtrl(!ctrlArmed);
+                    return;
+                }
+                var seq = TERM_KEY_SEQS[btn.getAttribute('data-k')];
+                if (seq) sendTermInput(activeTid, seq);
+            });
         });
 
         // Initialize

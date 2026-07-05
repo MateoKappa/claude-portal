@@ -223,7 +223,10 @@ async def login(request: Request):
 async def index(portal_auth: str | None = Cookie(default=None)):
     if not check_auth(portal_auth):
         return RedirectResponse("/login")
-    return FileResponse(Path(__file__).parent / "static" / "index.html")
+    return FileResponse(
+        Path(__file__).parent / "static" / "index.html",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 # ─── Claude CLI Integration ──────────────────────────────────────────────────

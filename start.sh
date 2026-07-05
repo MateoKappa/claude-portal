@@ -2,6 +2,11 @@
 set -e
 cd "$(dirname "$0")"
 
+# Activate venv if it exists
+if [ -f .venv/bin/activate ]; then
+    source .venv/bin/activate
+fi
+
 # Load .env if it exists
 if [ -f .env ]; then
     set -a

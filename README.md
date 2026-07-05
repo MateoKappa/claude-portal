@@ -20,53 +20,53 @@ Claude Portal is a lightweight server that bridges a web UI to the Claude Code C
 - **Security** — token auth, brute force protection, Cloudflare Tunnel (no open ports)
 - **Responsive UI** — works great on phones, tablets, and desktops
 
-## Prerequisites
-
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and logged in
-- Python 3.11+
-- (Optional) [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) for remote access
-
 ## Quick Start
 
+You need two things installed before starting:
+- **Python 3.11+** — [download here](https://www.python.org/downloads/)
+- **Claude Code CLI** — `npm install -g @anthropic-ai/claude-code` ([docs](https://docs.anthropic.com/en/docs/claude-code)), then run `claude` once to log in
+
+Then:
+
 ```bash
-# Clone
 git clone https://github.com/mateokappa/claude-portal.git
 cd claude-portal
+./setup.sh
+```
 
-# Install dependencies
-pip install -r requirements.txt
+The setup script will:
+1. Verify Python and Claude Code are installed
+2. Create a virtual environment and install dependencies
+3. Generate secure access tokens and save them to `.env`
+4. Print your tokens — save them somewhere safe
 
-# Configure
-cp .env.example .env
-# Edit .env with your tokens (use long random strings!)
+When setup finishes, start the portal:
 
-# Run
+```bash
 ./start.sh
 ```
 
-Open `http://localhost:8080` and enter your token.
+Open **http://localhost:8080** and enter your token.
 
-### Generate secure tokens
-
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-```
+> **Forgot your tokens?** They're stored in the `.env` file. Delete it and re-run `./setup.sh` to generate new ones.
 
 ## Remote Access (Cloudflare Tunnel)
 
-To access the portal from any device over the internet:
+To access the portal from anywhere over the internet, you can use a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/). This requires a free Cloudflare account and a domain managed by Cloudflare.
 
 ```bash
-# Install cloudflared
-brew install cloudflared  # macOS
-# or: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+# 1. Install cloudflared
+brew install cloudflared          # macOS
+# See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/ for Linux/Windows
 
-# Login and create tunnel
+# 2. Authenticate with Cloudflare
 cloudflared tunnel login
+
+# 3. Create a tunnel
 cloudflared tunnel create claude-portal
 cloudflared tunnel route dns claude-portal portal.yourdomain.com
 
-# Add to ~/.cloudflared/config.yml:
+# 4. Configure the tunnel — add to ~/.cloudflared/config.yml:
 # tunnel: <your-tunnel-id>
 # credentials-file: ~/.cloudflared/<your-tunnel-id>.json
 # ingress:
@@ -74,16 +74,16 @@ cloudflared tunnel route dns claude-portal portal.yourdomain.com
 #     service: http://localhost:8080
 #   - service: http_status:404
 
-# Add to your .env:
+# 5. Add to your .env:
 # TUNNEL_NAME=claude-portal
 # TUNNEL_URL=https://portal.yourdomain.com
 ```
 
-The start script will automatically launch the tunnel alongside the server.
+Once configured, `./start.sh` will automatically launch the tunnel alongside the server.
 
 ## Configuration
 
-All config lives in `.env`:
+All config lives in `.env` (created by `setup.sh`):
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -97,12 +97,29 @@ All config lives in `.env`:
 
 | | Admin | Limited |
 |---|---|---|
-| Chat with Claude | ✓ | ✓ |
-| Create & download files | ✓ | ✓ |
-| Read host filesystem | ✓ | ✗ |
-| Run any shell command | ✓ | Sandboxed |
-| Install packages | ✓ | ✓ (in sandbox) |
-| Serve files (ngrok, etc.) | ✓ | ✓ |
+| Chat with Claude | Yes | Yes |
+| Create & download files | Yes | Yes |
+| Read host filesystem | Yes | No |
+| Run any shell command | Yes | Sandboxed |
+| Install packages | Yes | Yes (in sandbox) |
+| Serve files (ngrok, etc.) | Yes | Yes |
+
+## Troubleshooting
+
+**`./setup.sh: Permission denied`**
+Run `chmod +x setup.sh start.sh` and try again.
+
+**`claude: command not found`**
+Install Claude Code CLI with `npm install -g @anthropic-ai/claude-code`, then run `claude` once to complete login.
+
+**Port already in use**
+Either stop whatever is using port 8080, or change the `PORT` in your `.env` file.
+
+**Login works but chat doesn't connect**
+Make sure Claude Code CLI is logged in — run `claude` in your terminal to verify. The portal communicates with Claude via the CLI, so it must be authenticated.
+
+**Cookies not working (localhost)**
+The auth cookie has `secure=true`, which some browsers enforce even on localhost. Try using Chrome or Firefox, or access via `127.0.0.1:8080` instead.
 
 ## Security
 
@@ -117,11 +134,11 @@ All config lives in `.env`:
 
 ```
 claude-portal/
-├── .env.example        # Template for configuration
-├── .gitignore
-├── requirements.txt    # Python dependencies
+├── setup.sh            # One-time setup (venv, deps, tokens)
+├── start.sh            # Start the portal
 ├── server.py           # FastAPI backend
-├── start.sh            # One-command startup script
+├── .env.example        # Template for configuration
+├── requirements.txt    # Python dependencies
 ├── shared-files/       # Files Claude creates for download
 └── static/
     └── index.html      # Chat UI
